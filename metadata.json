@@ -1,0 +1,8 @@
+{
+  "name": "HEIST",
+  "description": "Premium D2C AI styling and grooming assistant with dual-layer Supermemory and Tokyo persona.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
