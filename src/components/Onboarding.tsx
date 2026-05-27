@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Send, Sparkles, User, RefreshCw, LogOut, CheckCircle2, Lock, Settings, X } from "lucide-react";
+import { Send, Sparkles, User, RefreshCw, LogOut, CheckCircle2, Lock, Settings, X, Image } from "lucide-react";
 import { getSupabase } from "../lib/supabase";
 
 interface OnboardingProps {
@@ -14,6 +14,7 @@ interface ChatMessage {
   role: "tokyo" | "user";
   content: string;
   timestamp: Date;
+  photo?: string;
 }
 
 export default function Onboarding({ userEmail, userId, onLogout }: OnboardingProps) {
@@ -35,6 +36,45 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
     userEmail.toLowerCase().trim() === "shravan.p1877@gmail.com"
   );
   const [isOnboardingDone, setIsOnboardingDone] = useState<boolean>(false);
+
+  const [superragStatus, setSuperragStatus] = useState<{ active_api: boolean; characters: number } | null>(null);
+
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Load initial SuperRAG API activation status check
+  useEffect(() => {
+    async function checkConfig() {
+      try {
+        const response = await fetch("/api/config-status");
+        if (response.ok) {
+          const statusResult = await response.json();
+          setSuperragStatus({
+            active_api: statusResult.superrag_configured,
+            characters: 0
+          });
+        }
+      } catch (err) {
+        console.warn("Could not load API status config:", err);
+      }
+    }
+    checkConfig();
+  }, []);
+
+  const handleImageUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSelectedImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -68,6 +108,7 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
                     id: m.id || `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
                     role: m.role || "tokyo",
                     content: m.content || "",
+                    photo: m.photo || undefined,
                     timestamp: m.timestamp ? new Date(m.timestamp) : new Date()
                   }));
                 }
@@ -172,6 +213,7 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
             id: m.id,
             role: m.role,
             content: m.content,
+            photo: m.photo || undefined,
             timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : new Date(m.timestamp).toISOString()
           }))
         };
@@ -192,19 +234,24 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
   }, [messages, answers, userId]);
 
   const handleUserAnswer = async (text: string) => {
-    if (!text.trim() || isTyping || paywallActive) return;
+    if ((!text.trim() && !selectedImage) || isTyping || paywallActive) return;
 
     // Append user's message with extra salt to absolutely protect against key collision
     const salt = Math.random().toString(36).substring(2, 8);
     const newMsg: ChatMessage = {
       id: `user_${Date.now()}_${salt}`,
       role: "user",
-      content: text,
+      content: text || "Selected visual styling fit check image 📸",
+      photo: selectedImage || undefined,
       timestamp: new Date()
     };
     
+    // Store selectedImage in temp to send
+    const tempImageToSend = selectedImage;
+
     setMessages((prev) => [...prev, newMsg]);
     setUserInput("");
+    setSelectedImage(null);
     setIsTyping(true);
 
     // Save message trace metrics to Supabase profiles database table
@@ -239,12 +286,20 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
             user_id: userId,
             message: text,
             answers: answers,
-            history: messages.map(m => ({ role: m.role, content: m.content }))
+            history: messages.map(m => ({ role: m.role, content: m.content })),
+            photo: tempImageToSend || undefined
           })
         });
         
         const data = await response.json();
         setIsTyping(false);
+
+        if (data.superrag) {
+          setSuperragStatus({
+            active_api: data.superrag.active_api,
+            characters: data.superrag.characters || 0
+          });
+        }
         
         const replyText = data.text || "Bestie, I love that so much! Tell me, what coordinate are we styling next?";
         const replyMsg: ChatMessage = {
@@ -418,12 +473,21 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
     <div className="flex-1 flex flex-col h-screen bg-[#696969] text-black overflow-hidden relative font-sans text-black">
       
       {/* HEADER BAR */}
-      <header className="h-16 border-b border-slate-400/40 flex items-center justify-between px-6 md:px-10 shrink-0 bg-[#696969] z-10 select-none">
-        <div className="flex items-center space-x-3">
+      <header className="h-16 border-b border-slate-400/40 flex items-center justify-between px-4 md:px-10 shrink-0 bg-[#696969] z-10 select-none">
+        <div className="flex items-center space-x-2 md:space-x-4">
           <div className={`w-2.5 h-2.5 rounded-full ${isTyping ? "bg-teal-800 animate-ping" : "bg-teal-900"}`} />
-          <span className="text-sm font-black text-teal-950 tracking-tight">
+          <span className="text-xs md:text-sm font-black text-teal-950 tracking-tight">
             Tokyo - powered by Heist.
           </span>
+          {superragStatus !== null && userEmail.toLowerCase().trim() === "shravan.p1877@gmail.com" && (
+            <span className={`text-[10px] md:text-[11px] font-extrabold uppercase py-1 px-3 border rounded-xl shadow-xs transition duration-200 flex items-center gap-1.5 ${
+              superragStatus.active_api
+                ? "bg-emerald-100 border-emerald-400 text-emerald-800"
+                : "bg-orange-50 border-orange-300 text-orange-700"
+            }`}>
+              🧠 SuperRAG: {superragStatus.active_api ? "Active API" : "Offline Fallback Cache"}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center space-x-3">
@@ -455,6 +519,16 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
                     ? "bg-[#323232] text-white rounded-br-none"
                     : "bg-[#525252] text-white rounded-bl-none"
                 }`}>
+                  {msg.photo && (
+                    <div className="mb-2 max-w-sm rounded-lg overflow-hidden border border-slate-600/50 bg-black/10">
+                      <img 
+                        src={msg.photo} 
+                        alt="Styling context visual" 
+                        referrerPolicy="no-referrer"
+                        className="max-h-60 w-full object-cover rounded-lg"
+                      />
+                    </div>
+                  )}
                   <p className="text-sm md:text-base leading-relaxed">
                     {msg.content}
                   </p>
@@ -503,8 +577,39 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
                 )}
               </AnimatePresence>
  
+              {/* Image Preview Thumbnail */}
+              {selectedImage && (
+                <div className="mb-2 px-1 flex items-center">
+                  <div className="relative inline-block border-2 border-slate-400 bg-white rounded-xl overflow-hidden shadow-md p-1">
+                    <img 
+                      src={selectedImage} 
+                      alt="Thumbnail upload preview" 
+                      className="h-16 w-16 object-cover rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSelectedImage(null)}
+                      title="Remove image"
+                      className="absolute top-0 right-0 p-1 bg-red-600 hover:bg-red-700 text-white rounded-full transition active:scale-90 cursor-pointer text-[10px] w-5 h-5 flex items-center justify-center font-black"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                  <span className="text-xs text-black font-extrabold ml-3 animate-pulse bg-white border border-slate-400 px-3 py-1.5 rounded-xl shadow-sm uppercase tracking-wider select-none font-mono">
+                    📸 Gemini Mode - Photo Attached
+                  </span>
+                </div>
+              )}
+
               {/* LOWER INPUT CONTROL BOARD */}
               <div className="relative flex items-center px-1">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  accept="image/*"
+                  className="hidden"
+                />
                 <input
                   type="text"
                   value={userInput}
@@ -518,11 +623,20 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
                       : "Type here to chat..."
                   }
                   disabled={paywallActive}
-                  className="w-full bg-white text-black border-2 border-slate-400 py-4.5 pl-6 pr-24 rounded-2xl text-sm font-bold focus:outline-none placeholder-slate-500 duration-200 shadow-inner"
+                  className="w-full bg-white text-black border-2 border-slate-400 py-4.5 pl-6 pr-32 rounded-2xl text-sm font-bold focus:outline-none placeholder-slate-500 duration-200 shadow-inner"
                 />
-                <div className="absolute right-4 flex space-x-2">
+                <div className="absolute right-4 flex space-x-2 items-center">
                   <button
-                    disabled={!userInput.trim() || paywallActive}
+                    type="button"
+                    onClick={handleImageUploadClick}
+                    disabled={paywallActive}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-800 p-2.5 rounded-xl border border-slate-300 transition duration-200 cursor-pointer flex items-center justify-center shadow-sm active:scale-95"
+                    title="Upload Styling Photo / Aesthetic check"
+                  >
+                    <Image size={15} />
+                  </button>
+                  <button
+                    disabled={(!userInput.trim() && !selectedImage) || paywallActive}
                     onClick={() => handleUserAnswer(userInput)}
                     className="bg-[#525252] hover:bg-[#323232] text-white p-2.5 rounded-xl transition-all duration-200 disabled:opacity-40 cursor-pointer"
                   >

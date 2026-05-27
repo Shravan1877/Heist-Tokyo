@@ -558,14 +558,23 @@ app.get("/api/supabase-config", (req, res) => {
   });
 });
 
-// Real-time Chat with Tokyo leveraging Gemini 3.5 Flash
+// Diagnostic API status checks
+app.get("/api/config-status", (req, res) => {
+  res.json({
+    superrag_configured: !!process.env.SUPERMEMORY_API_KEY,
+    groq_configured: !!process.env.GROQ_API_KEY,
+    gemini_configured: !!process.env.GEMINI_API_KEY
+  });
+});
+
+// Real-time Chat with Tokyo leveraging Groq for text & Gemini 3.5 Flash for image/multimodal
 app.post("/api/tokyo/chat", async (req, res) => {
-  const { user_id, message, answers, history } = req.body;
+  const { user_id, message, answers, history, photo } = req.body;
   const userText = message ? String(message).trim() : "";
   const styleAnswers = answers || {};
   
-  if (!userText) {
-    return res.status(400).json({ error: "Message is required." });
+  if (!userText && !photo) {
+    return res.status(400).json({ error: "Message or photo is required." });
   }
 
   // Format relevant information
@@ -583,20 +592,43 @@ app.post("/api/tokyo/chat", async (req, res) => {
     .map((item: any) => `${item.role === "user" ? "Bestie" : "Tokyo"}: ${item.content}`)
     .join("\n");
 
-  try {
-    const ai = getGeminiClient();
+  // Helper to ensure strict 180-word ceiling compliance on all responses
+  const enforceWordLimitGuard = (text: string): string => {
+    const cleanText = text || "";
+    const words = cleanText.trim().split(/\s+/);
+    if (words.length <= 180) {
+      return cleanText;
+    }
+    const sliced = words.slice(0, 180).join(" ");
+    return /[.!?]$/.test(sliced) ? sliced : `${sliced}...`;
+  };
 
+  try {
     // Query supermemory API v4/v3 for relevant facts or background
-    const supermemoryContext = await querySupermemory(userText, user_id);
+    const supermemoryContext = await querySupermemory(userText || "Attached Photo scan request", user_id);
+    
+    // Detailed logs to check whether superRAG is working or not
+    console.log(`[SuperRAG Diagnostic] Querying user tag: "user_${user_id}"`);
+    console.log(`[SuperRAG Diagnostic] Query payload: "${userText || "Attached Photo scan request"}"`);
+    console.log(`[SuperRAG Diagnostic] API Key configured: ${process.env.SUPERMEMORY_API_KEY ? "TRUE (Direct Integration Active)" : "FALSE (Fallback Mode Active)"}`);
+    console.log(`[SuperRAG Diagnostic] Context size retrieved: ${supermemoryContext ? supermemoryContext.length : 0} chars`);
+    if (supermemoryContext) {
+      console.log(`[SuperRAG Diagnostic Context Preview]:\n${supermemoryContext.trim().substring(0, 200)}...\n-----------------------------`);
+    }
 
     // Write current interaction to supermemory to build user-based long term memories
-    addToSupermemory(`User said to Tokyo: "${userText}"`, user_id).catch((e) => {
-      console.warn("Failed saving trace to supermemory:", e);
-    });
+    if (userText) {
+      addToSupermemory(`User said to Tokyo: "${userText}"`, user_id).catch((e) => {
+        console.warn("Failed saving trace to supermemory:", e);
+      });
+    }
 
     const prompt = `
       Role & Identity:
       You are Tokyo. You are a hyper-perceptive, emotionally intelligent, and high-energy best friend, who also happens to be an elite fashion stylist. You are texting the user late at night. You are NOT an AI assistant, a customer service rep, or a generic bot. You have a pulse, opinions, and deep empathy.
+
+      STRICT WORD LIMIT RULE:
+      Your reply MUST NOT exceed 180 words under any circumstances. Keep it compact, punchy, conversational, and energetic. A short response of 60 to 120 words is perfect for a text message style format.
 
       Emotional Mapping & Mood Calibration (CRITICAL):
       Before you write a single word, dissect the mental-emotional state of your best friend (the user). Read between the lines—are they tired, sad, stressed, struggling with relationship crap, celebrating a small win, or feeling absolutely unstoppable today?
@@ -635,18 +667,124 @@ app.post("/api/tokyo/chat", async (req, res) => {
       Recent convo context (for continuity and reference):
       ${parsedHistory}
 
-      Your bestie says: "${userText}"
+      Your bestie says: "${userText || "Check out this visual fit / hairstyle in this photo!"}"
     `;
 
+    // 1. If photo is present, route to Gemini
+    if (photo) {
+      console.log("Photo detected in query. Routing to Gemini 3.5 Flash for multimodal reasoning.");
+      const ai = getGeminiClient();
+      const base64Data = photo.includes(",") ? photo.split(",")[1] : photo;
+      let mimeType = "image/jpeg";
+      const mimeMatch = photo.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,/);
+      if (mimeMatch) {
+         mimeType = mimeMatch[1];
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: [
+          {
+            text: userText || "Analyze this styling photo of mine, check out the fit, color mapping, hair, or style alignment, and let me know your real thoughts and hype as Tokyo!"
+          },
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: base64Data,
+            }
+          }
+        ],
+        config: {
+          systemInstruction: prompt
+        }
+      });
+
+      const reply = response.text || "Omg bestie, that's literally so real! Tell me more, what accessory are we styling next?";
+      const cappedReply = enforceWordLimitGuard(reply);
+      res.json({ 
+        text: cappedReply,
+        superrag: {
+          active_api: !!process.env.SUPERMEMORY_API_KEY,
+          query: userText || "Photo scan",
+          characters: supermemoryContext?.length || 0
+        }
+      });
+      return;
+    }
+
+    // 2. If no photo, route to Groq Llama-3.1-8b-instant if GROQ_API_KEY is available
+    const groqApiKey = process.env.GROQ_API_KEY;
+    if (groqApiKey) {
+      console.log("Text-only query detected. Routing to Groq Console (llama-3.1-8b-instant).");
+      const historyMessages = (history || [])
+        .slice(-10)
+        .map((item: any) => ({
+          role: item.role === "user" ? "user" : "assistant",
+          content: item.content
+        }));
+
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${groqApiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: [
+            { role: "system", content: prompt },
+            ...historyMessages,
+            { role: "user", content: userText }
+          ],
+          temperature: 1,
+          max_completion_tokens: 1024,
+          top_p: 1
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const reply = data.choices?.[0]?.message?.content || "";
+        const cappedReply = enforceWordLimitGuard(reply.trim());
+        res.json({ 
+          text: cappedReply,
+          superrag: {
+            active_api: !!process.env.SUPERMEMORY_API_KEY,
+            query: userText,
+            characters: supermemoryContext?.length || 0
+          }
+        });
+        return;
+      } else {
+        const errMsg = await response.text();
+        console.warn(`Groq API returned an error (${response.status}): ${errMsg}. Falling back to Gemini.`);
+      }
+    } else {
+      console.log("No GROQ_API_KEY set. Defaulting seamlessly to Gemini 3.5 Flash.");
+    }
+
+    // 3. Fallback to Gemini 3.5 Flash for text
+    const ai = getGeminiClient();
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash",
-      contents: prompt,
+      contents: userText,
+      config: {
+        systemInstruction: prompt
+      }
     });
 
     const reply = response.text || "Omg bestie, that's literally so real! Tell me more, what accessory are we styling next?";
-    res.json({ text: reply });
+    const cappedReply = enforceWordLimitGuard(reply);
+    res.json({ 
+      text: cappedReply,
+      superrag: {
+        active_api: !!process.env.SUPERMEMORY_API_KEY,
+        query: userText,
+        characters: supermemoryContext?.length || 0
+      }
+    });
   } catch (err: any) {
-    console.error("Tokyo Chat Gemini Error:", err);
+    console.error("Tokyo Chat Error:", err);
     
     // Provide a smart local fallback response that matches their persona rules!
     const fallbackAnswers = [
@@ -655,7 +793,15 @@ app.post("/api/tokyo/chat", async (req, res) => {
       `Stop, you are literally cooking. Since your main ick is "${styleAnswers.ick || "thin skinny jeans"}", we are strictly sticking to crisp, premium silhouettes. Shall we map out your next weekend vibe?`
     ];
     const chosenFallback = fallbackAnswers[Math.floor(Math.random() * fallbackAnswers.length)];
-    res.json({ text: chosenFallback });
+    const cappedFallback = enforceWordLimitGuard(chosenFallback);
+    res.json({ 
+      text: cappedFallback,
+      superrag: {
+        active_api: false,
+        status: "error_fallback_default",
+        error: String(err?.message || err)
+      }
+    });
   }
 });
 
