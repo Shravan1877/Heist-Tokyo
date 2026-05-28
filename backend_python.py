@@ -4,6 +4,8 @@ import httpx
 from typing import TypedDict, List, Optional, Literal
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
@@ -594,6 +596,27 @@ async def chat_interaction(payload: UserChatPayload):
         "reply": result["messages"][-1]["content"],
         "state": result
     }
+
+# Serve static assets if dist exists
+if os.path.exists("dist"):
+    app.mount("/assets", StaticFiles(directory="dist/assets"), name="assets")
+
+# Absolute bottom: Catch-all route to serve the React App SPA
+@app.get("/{catchall:path}")
+async def serve_react_app(catchall: str):
+    # Ignore any paths starting with api/, docs, or openapi.json to prevent hijacking of backend API routes
+    if (
+        catchall.startswith("api/") or 
+        catchall.startswith("api") or 
+        catchall.startswith("docs") or 
+        catchall.startswith("openapi.json")
+    ):
+        raise HTTPException(status_code=404, detail="API route not found")
+    
+    index_path = os.path.join("dist", "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Vite frontend distribution 'dist/' directory is missing locally. Run build first."}
 
 if __name__ == "__main__":
     import uvicorn
