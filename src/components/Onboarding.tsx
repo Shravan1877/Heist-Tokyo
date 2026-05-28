@@ -66,7 +66,6 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
   const [superragStatus, setSuperragStatus] = useState<{ active_api: boolean; characters: number } | null>(null);
   const [showRestorePrompt, setShowRestorePrompt] = useState<boolean>(false);
   const [isRestoring, setIsRestoring] = useState<boolean>(false);
-  const [isTestOnboardingMode, setIsTestOnboardingMode] = useState<boolean>(false);
 
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -235,7 +234,6 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
   // Sync to local state instantly on modification
   useEffect(() => {
     if (messages.length === 0) return;
-    if (isTestOnboardingMode) return; // Prevent overwriting main cache in sandbox test mode
     const historyKey = `heist_chat_history_${userId}`;
     const answersKey = `heist_onboarding_answers_${userId}`;
     const stageKey = `heist_current_stage_${userId}`;
@@ -245,12 +243,11 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
     localStorage.setItem(answersKey, JSON.stringify(answers));
     localStorage.setItem(stageKey, String(currentStage));
     localStorage.setItem(doneKey, String(isOnboardingDone));
-  }, [messages, answers, currentStage, isOnboardingDone, isTestOnboardingMode, userId]);
+  }, [messages, answers, currentStage, isOnboardingDone, userId]);
 
   // Save the full updated array to heist_sessions in Supabase in background
   useEffect(() => {
     if (messages.length === 0 || !userId) return;
-    if (isTestOnboardingMode) return; // Skip saving to database if in test mode
     const supabase = getSupabase();
     if (!supabase) return;
 
@@ -360,29 +357,6 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
     }
   };
 
-  const handleTriggerAdminTestOnboarding = () => {
-    setIsTestOnboardingMode(true);
-    setCurrentStage(-2);
-    setAnswers({
-      vibe: "",
-      fit: "",
-      lifestyle: "",
-      ick: "",
-      hook: ""
-    });
-    setIsOnboardingDone(false);
-    setPaywallActive(false);
-    setPaymentSuccess(false);
-    setMessages([
-      {
-        id: `test_init_${Date.now()}`,
-        role: "tokyo",
-        content: "Welcome to Tokyo! 🌸 Before we begin, let's analyze your canvas. Please upload a clear photo of your Front Profile first so I can map your exact structure!\n\n⚠️ ADMIN TEST ONBOARDING ACTIVE: No profile details or chats will be persisted to database or Supermemory.ai during this sandbox run.",
-        timestamp: new Date()
-      }
-    ]);
-  };
-
   const handleUserAnswer = async (text: string) => {
     if ((!text.trim() && !selectedImage) || isTyping || paywallActive) return;
 
@@ -436,21 +410,19 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
 
     // Save message trace metrics to Supabase profiles database table
     try {
-      if (!isTestOnboardingMode) {
-        const supabase = getSupabase();
-        if (supabase && userId) {
-          supabase.from("profiles")
-            .select("message_count")
-            .eq("id", userId)
-            .single()
-            .then(({ data }) => {
-              const currentCount = data?.message_count || 0;
-              supabase.from("profiles")
-                .update({ message_count: currentCount + 1 })
-                .eq("id", userId)
-                .then(() => {});
-            });
-        }
+      const supabase = getSupabase();
+      if (supabase && userId) {
+        supabase.from("profiles")
+          .select("message_count")
+          .eq("id", userId)
+          .single()
+          .then(({ data }) => {
+            const currentCount = data?.message_count || 0;
+            supabase.from("profiles")
+              .update({ message_count: currentCount + 1 })
+              .eq("id", userId)
+              .then(() => {});
+          });
       }
     } catch (dbErr) {
       console.warn("Telemetry warning:", dbErr);
@@ -470,7 +442,7 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
             answers: answers,
             history: messages.map(m => ({ role: m.role, content: m.content })),
             photo: tempImageToSend || undefined,
-            is_test: isTestOnboardingMode
+            is_test: false
           })
         });
         
@@ -566,7 +538,7 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
           answers: updatedAnswers,
           current_onboarding_stage: currentStage,
           history: messages.map(m => ({ role: m.role, content: m.content })),
-          is_test: isTestOnboardingMode
+          is_test: false
         })
       });
       const data = await response.json();
@@ -593,7 +565,7 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
       } else {
         // Submit answer to Stage 5 complete -> Launch Paywall Trap unless Admin
         const isAdmin = userEmail.toLowerCase().trim() === "shravan.p1877@gmail.com";
-        if (isAdmin && !isTestOnboardingMode) {
+        if (isAdmin) {
           setPaymentSuccess(true);
           setIsOnboardingDone(true);
           setMessages((prev) => [
@@ -650,21 +622,19 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
   const handlePayment = async () => {
     setPaymentSuccess(true);
 
-    if (!isTestOnboardingMode) {
-      const supabase = getSupabase();
-      if (supabase && userId) {
-        try {
-          await supabase
-            .from("profiles")
-            .update({
-              is_premium: true,
-              message_count: 5
-            })
-            .eq("id", userId);
-          console.log("Supabase profile successfully updated to premium state.");
-        } catch (dbErr) {
-          console.error("Database update failed:", dbErr);
-        }
+    const supabase = getSupabase();
+    if (supabase && userId) {
+      try {
+        await supabase
+          .from("profiles")
+          .update({
+            is_premium: true,
+            message_count: 5
+          })
+          .eq("id", userId);
+        console.log("Supabase profile successfully updated to premium state.");
+      } catch (dbErr) {
+        console.error("Database update failed:", dbErr);
       }
     }
 
@@ -683,7 +653,7 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
             is_payment_hype: true,
             answers: answers,
             history: messages.map(m => ({ role: m.role, content: m.content })),
-            is_test: isTestOnboardingMode
+            is_test: false
           })
         });
         const data = await response.json();
@@ -740,19 +710,6 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
         </div>
 
         <div className="flex items-center space-x-3">
-          {userEmail.toLowerCase().trim() === "shravan.p1877@gmail.com" && (
-            <button 
-              onClick={handleTriggerAdminTestOnboarding}
-              className={`flex items-center space-x-1.5 px-3 py-1.5 border rounded-xl text-xs font-black uppercase tracking-wider active:scale-95 transition-all shadow-sm cursor-pointer ${
-                isTestOnboardingMode 
-                  ? "bg-amber-100 border-amber-500 text-amber-900 ring-2 ring-amber-400 font-extrabold" 
-                  : "bg-slate-100/90 border-teal-950/25 text-teal-950 hover:bg-white"
-              }`}
-            >
-              <RefreshCw size={13} className={isTestOnboardingMode ? "animate-spin" : ""} />
-              <span>{isTestOnboardingMode ? "Testing Active" : "Test Onboarding"}</span>
-            </button>
-          )}
           {/* Settings Tab / sign out */}
           <button 
             onClick={() => setShowSettings(!showSettings)}
@@ -771,23 +728,6 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
         {/* CHAT SCREEN WITH TRANSITIONAL EFFECTS */}
         <div className={`flex-1 p-4 md:p-8 flex flex-col justify-between overflow-hidden relative ${paywallActive ? "backdrop-blur-md pointer-events-none select-none blur-sm" : ""}`}>
           <div className="flex-1 overflow-y-auto space-y-6 py-4 px-2 md:px-4">
-            {isTestOnboardingMode && (
-              <div className="bg-amber-105 border-2 border-amber-400 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-md">
-                <div className="text-left">
-                  <p className="text-xs font-black uppercase tracking-widest text-amber-800">⚠️ Sandbox Active</p>
-                  <p className="text-sm font-extrabold text-amber-950">Onboarding & Chat testing environment is active. All database persistence & Supermemory.ai indexing checks are paused.</p>
-                </div>
-                <button
-                  onClick={() => {
-                    window.location.reload();
-                  }}
-                  className="bg-amber-750 hover:bg-amber-900 border border-amber-600 text-white px-3 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition active:scale-95 cursor-pointer shrink-0 shadow-sm"
-                >
-                  Exit Sandbox
-                </button>
-              </div>
-            )}
-
             {showRestorePrompt && (
               <div className="bg-slate-100 border-2 border-slate-400 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-md animate-bounce-short">
                 <div className="text-left">

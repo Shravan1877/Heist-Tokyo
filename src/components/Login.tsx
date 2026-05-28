@@ -13,24 +13,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [otp, setOtp] = useState<string[]>(new Array(6).fill(""));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isSandbox, setIsSandbox] = useState(false);
 
   const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
-
-  // Check if Supabase keys exist on mount
-  useEffect(() => {
-    const { isConfigured } = getSupabaseKeys();
-    setIsSandbox(!isConfigured);
-  }, []);
-
-  // Re-check keys after a short delay in case async configs are loaded
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const { isConfigured } = getSupabaseKeys();
-      setIsSandbox(!isConfigured);
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, []);
 
   // Focus first OTP field when entering OTP step
   useEffect(() => {
@@ -53,12 +37,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
     const supabase = getSupabase();
     if (!supabase) {
-      // Sandbox mode simulation
-      console.log(`[Sandbox] Simulating passwordless OTP trigger for ${email}`);
-      setTimeout(() => {
-        setLoading(false);
-        setStep("otp");
-      }, 1000);
+      setError("Supabase connection is not configured or offline. Please declare VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY first.");
+      setLoading(false);
       return;
     }
 
@@ -134,11 +114,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
     const supabase = getSupabase();
     if (!supabase) {
-      // Sandbox mode simulation success
-      setTimeout(() => {
-        setLoading(false);
-        onLoginSuccess(email, `sandbox_${Date.now()}`);
-      }, 1200);
+      setError("Supabase connection is not configured or offline. Please declare VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY first.");
+      setLoading(false);
       return;
     }
 
@@ -209,19 +186,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
   return (
     <div className="min-h-screen w-full bg-[#696969] flex flex-col items-center justify-center p-4 md:p-8 font-sans transition-colors duration-300 relative">
-      
-      {/* Sandbox Mode Warning Banner */}
-      {isSandbox && (
-        <div id="sandbox-banner" className="mb-6 w-full max-w-md bg-amber-50 border-2 border-amber-500/20 rounded-2xl p-4 flex items-start space-x-3 text-amber-900 font-bold text-xs select-none shadow-sm">
-          <AlertTriangle className="shrink-0 text-amber-500" size={16} />
-          <div>
-            <p className="uppercase tracking-wider font-extrabold text-[10px]">SUPABASE SANDBOX ACTIVE</p>
-            <p className="font-medium text-slate-700 mt-1 leading-relaxed">
-              No env keys detected yet. Dynamic passwordless OTP flow is fully simulated so you can experience Tokyo onboarding instantly!
-            </p>
-          </div>
-        </div>
-      )}
 
       <div id="login-container" className="w-full max-w-md bg-white border-2 border-teal-800/10 rounded-3xl p-6 md:p-10 shadow-xl relative overflow-hidden">
         {/* Aesthetic accents */}
