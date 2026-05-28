@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import Login from "./components/Login";
 import Onboarding from "./components/Onboarding";
+import InstallPrompt from "./components/InstallPrompt";
 
 export default function App() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
@@ -75,6 +76,7 @@ export default function App() {
           onLoginSuccess={handleLoginSuccess} 
         />
       )}
+      <InstallPrompt />
     </div>
   );
 }
