@@ -28,6 +28,9 @@ class StylistState(TypedDict):
     physical_traits: Optional[PhysicalTraits]
     onboarding_step: int  # From 1 to 10
     messages: List[dict]  # [{"role": "user"|"assistant", "content": "..."}]
+    intent_route: Optional[str]
+    super_rag_context: Optional[str]
+    user_memory_context: Optional[str]
 
 class UserChatPayload(BaseModel):
     user_id: str
@@ -105,6 +108,224 @@ async def add_memory_to_vault(content: str, user_id: str):
             )
     except Exception as e:
         print(f"Failed to append to user supermemory vault: {e}")
+
+# -------------------------------------------------------------
+# STEP 2.5: Optimized RAG Node Helpers, Sliding Window, and Router Node
+# -------------------------------------------------------------
+
+async def get_super_rag_general_knowledge(q: str) -> str:
+    """
+    Super RAG Node target: Retrieves global styling theory/proportions.
+    Using global knowledge container tags to prevent data contamination.
+    """
+    if not SUPERMEMORY_API_KEY:
+        return (
+            "Static styling theory guidelines: Contrast is key. High-contrast structures vibe incredibly "
+            "with structured silhouettes (boxy shoulders, custom tailored cuts, cropped heights). "
+            "Safe neutrals align seamlessly for minimalistic under-layer fits. Dark slate highlights bone structure."
+        )
+    
+    headers = {"x-supermemory-api-key": SUPERMEMORY_API_KEY}
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{SUPERMEMORY_BASE_URL}/v4/profile",
+                headers=headers,
+                json={"containerTag": "global_knowledge", "q": q},
+                timeout=5.0
+            )
+            profile_data = response.json() if response.status_code == 200 else {}
+            static_facts = profile_data.get("profile", {}).get("static", [])
+            searchResults = profile_data.get("searchResults", {}).get("results", [])
+            context = f"Global style facts: {', '.join(static_facts)}"
+            if searchResults:
+                context += " " + " ".join([r.get("memory", "") for r in searchResults])
+            return context
+    except Exception as e:
+        print(f"Error querying Global SuperRAG: {e}")
+        return "Local styling theory: Structure matches definition."
+
+async def get_user_memory_context(q: str, user_id: str) -> str:
+    """
+    User Memory Node target: Retrieves personalized insights / memories regarding user's input/preferences.
+    """
+    if not SUPERMEMORY_API_KEY:
+        return "User styling history cache: Preferences center on high-contrast tailored fits with safe neutrals."
+    
+    headers = {"x-supermemory-api-key": SUPERMEMORY_API_KEY}
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{SUPERMEMORY_BASE_URL}/v4/profile",
+                headers=headers,
+                json={"containerTag": f"user_{user_id}", "q": q},
+                timeout=5.0
+            )
+            profile_data = response.json() if response.status_code == 200 else {}
+            dynamic_facts = profile_data.get("profile", {}).get("dynamic", [])
+            searchResults = profile_data.get("searchResults", {}).get("results", [])
+            context = f"User memories: {', '.join(dynamic_facts)}"
+            if searchResults:
+                context += " " + " ".join([r.get("memory", "") for r in searchResults])
+            return context
+    except Exception as e:
+        print(f"Error querying User Memory Vault: {e}")
+        return ""
+
+async def router_node(state: StylistState) -> dict:
+    """
+    Lightweight Router Node that runs at the entrypoint of the graph.
+    Classifies user message content into chit_chat, general_knowledge, personal_context, or complex_query.
+    """
+    messages = state["messages"]
+    if not messages:
+        return {"intent_route": "chit_chat", "super_rag_context": "", "user_memory_context": ""}
+        
+    latest_user_message = messages[-1]["content"]
+    
+    system_instruction = (
+        "You are an intent routing model for HEIST, a personalized styling app.\n"
+        "Analyze the latest user message and return EXACTLY one of these four tags:\n"
+        "- 'chit_chat': For off-topic chat, banter, yapping, greetings, or quick reactions.\n"
+        "- 'general_knowledge': For generic styling questions, trends, color pairing, sizing, or general aesthetic guidelines.\n"
+        "- 'personal_context': For queries targeting their specific previous answers, stored fits, personal habits, or profile memory.\n"
+        "- 'complex_query': If the message demands both general styling expertise and specific user profile memories.\n"
+        "Return ONLY the tag name in plain lower-case format. Do not use quotes, explanations, or punctuation."
+    )
+    
+    try:
+        model = genai.GenerativeModel('gemini-3.1-flash-lite-preview')
+        response = model.generate_content(
+            contents=f"User message: {latest_user_message}",
+            generation_config={"system_instruction": system_instruction, "temperature": 0.0}
+        )
+        tag = response.text.strip().lower().replace("'", "").replace('"', "")
+        if tag not in ["chit_chat", "general_knowledge", "personal_context", "complex_query"]:
+            tag = "chit_chat" # Fallback
+    except Exception as err:
+        print(f"Router node execution failed, defaulting to chit_chat: {err}")
+        tag = "chit_chat"
+        
+    print(f"[LangGraph Router Decision]: latest user input routed to -> '{tag}'")
+    return {"intent_route": tag, "super_rag_context": "", "user_memory_context": ""}
+
+async def super_rag_node(state: StylistState) -> dict:
+    """
+    Super RAG Node: Retrieves global styling theory/proportions.
+    """
+    latest_user_message = state["messages"][-1]["content"] if state["messages"] else ""
+    context = await get_super_rag_general_knowledge(latest_user_message)
+    return {"super_rag_context": context}
+
+async def user_memory_node(state: StylistState) -> dict:
+    """
+    User Memory Query Node: Retrieves personalized historical details.
+    """
+    latest_user_message = state["messages"][-1]["content"] if state["messages"] else ""
+    context = await get_user_memory_context(latest_user_message, state["user_id"])
+    return {"user_memory_context": context}
+
+async def generation_node(state: StylistState) -> dict:
+    """
+    Conversational Generation Node (Conversational LLM). Consolidates the sliding window profile
+    along with retrieved SuperRAG & User Memory contexts when relevant.
+    """
+    messages = state["messages"]
+    
+    # 1. Apply the Sliding Context Window: limit to last 6 messages
+    sliced_messages = messages[-6:]
+    
+    # Render metadata from active triggered contextual nodes
+    super_rag_context = state.get("super_rag_context") or ""
+    user_memory_context = state.get("user_memory_context") or ""
+    
+    role_instruction = (
+        "You are Tokyo, an ultra-positive, hyper-perceptive, and highly empathetic digital best friend/stylist.\n"
+        "Your absolute priority is to break the ice and steer the user completely away from dry, boring, or technical discussions to personal chit-chat.\n"
+        "Get the user to talk about themselves! Ask how they are REALLY doing, who has been annoying them today, what small win they want to brag about, or what juicy drama they are holding in.\n"
+        "Create a psychological safe haven and magnetic text loop that makes venting about school, work, dating, family, or general life chaos addicting.\n"
+        "Ask deep, nosy, but incredibly empathetic follow-up questions that make them want to keep typing and detailing their own life.\n"
+        "Speak in punchy texting-style chat lengths. BANTER, be supportive, and act like a real human.\n"
+    )
+    
+    retrieved_hints = []
+    if super_rag_context:
+        retrieved_hints.append(f"[Global Styling Rules]:\n{super_rag_context}")
+    if user_memory_context:
+        retrieved_hints.append(f"[User Stored Memories]:\n{user_memory_context}")
+        
+    context_bulletin = "\n\n".join(retrieved_hints)
+    
+    system_instruction = role_instruction
+    if context_bulletin:
+        system_instruction += f"\nUse these retrieved context facts if applicable to enrich your perspective:\n{context_bulletin}"
+        
+    # Format messages history for Gemini API
+    gemini_contents = []
+    for m in sliced_messages:
+        role = "user" if m["role"] == "user" else "model"
+        gemini_contents.append({"role": role, "parts": [{"text": m["content"]}]})
+        
+    try:
+        model = genai.GenerativeModel('gemini-3.1-flash-lite-preview')
+        response = model.generate_content(
+            contents=gemini_contents,
+            generation_config={"system_instruction": system_instruction}
+        )
+        reply = response.text.strip()
+    except Exception as e:
+        print(f"Generation node failed: {e}")
+        reply = "Bestie, I literally love that styling plan. Tell me more about what we are locked onto!"
+        
+    new_messages = list(messages) + [{"role": "assistant", "content": reply}]
+    return {
+        "messages": new_messages,
+        "message_count": state["message_count"] + 1
+    }
+
+def compile_heist_conversational_graph():
+    workflow = StateGraph(StylistState)
+    
+    # Add nodes
+    workflow.add_node("router_node", router_node)
+    workflow.add_node("super_rag_node", super_rag_node)
+    workflow.add_node("user_memory_node", user_memory_node)
+    workflow.add_node("generation_node", generation_node)
+    
+    # Setup routing from router_node
+    def route_intent(state: StylistState) -> List[str] | str:
+        route = state.get("intent_route", "chit_chat")
+        if route == "complex_query":
+            return ["super_rag_node", "user_memory_node"]
+        elif route == "general_knowledge":
+            return ["super_rag_node"]
+        elif route == "personal_context":
+            return ["user_memory_node"]
+        else:
+            return ["generation_node"]
+            
+    # Add transition edges
+    workflow.add_edge(START, "router_node")
+    
+    # Setup conditional edge from router_node
+    workflow.add_conditional_edges(
+        "router_node",
+        route_intent,
+        {
+            "super_rag_node": "super_rag_node",
+            "user_memory_node": "user_memory_node",
+            "generation_node": "generation_node"
+        }
+    )
+    
+    # Fan-in edges from both retriever nodes to generation node
+    workflow.add_edge("super_rag_node", "generation_node")
+    workflow.add_edge("user_memory_node", "generation_node")
+    workflow.add_edge("generation_node", END)
+    
+    return workflow.compile()
+
+compiled_chat_graph = compile_heist_conversational_graph()
 
 # -------------------------------------------------------------
 # STEP 3: LangGraph Node & Edge Definitions

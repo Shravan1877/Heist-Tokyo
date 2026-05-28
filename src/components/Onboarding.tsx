@@ -11,10 +11,36 @@ interface OnboardingProps {
 
 interface ChatMessage {
   id: string;
-  role: "tokyo" | "user";
+  role: "tokyo" | "user" | "system";
   content: string;
   timestamp: Date;
   photo?: string;
+}
+
+// RFC4122 compliant UUID structure helper
+function generateUUID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+// Pseudo-UUID deterministic translations to map custom sandbox identifiers safely to standard UUID formatting
+function getSafeUUID(rawId: string): string {
+  const clean = rawId.trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean)) {
+    return clean;
+  }
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) {
+    hash = clean.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hex = Math.abs(hash).toString(16).padStart(12, "0");
+  return `00000000-0000-4000-8000-${hex.substring(0, 12)}`;
 }
 
 export default function Onboarding({ userEmail, userId, onLogout }: OnboardingProps) {
@@ -38,6 +64,9 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
   const [isOnboardingDone, setIsOnboardingDone] = useState<boolean>(false);
 
   const [superragStatus, setSuperragStatus] = useState<{ active_api: boolean; characters: number } | null>(null);
+  const [showRestorePrompt, setShowRestorePrompt] = useState<boolean>(false);
+  const [isRestoring, setIsRestoring] = useState<boolean>(false);
+  const [isTestOnboardingMode, setIsTestOnboardingMode] = useState<boolean>(false);
 
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -78,77 +107,100 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load existing profile from Supabase if configured
+  // Load existing profile & historical chat dumps from localStorage / Supabase
   useEffect(() => {
-    async function loadProfile() {
+    const historyKey = `heist_chat_history_${userId}`;
+    const answersKey = `heist_onboarding_answers_${userId}`;
+    const stageKey = `heist_current_stage_${userId}`;
+    const doneKey = `heist_onboarding_done_${userId}`;
+
+    const cachedHistoryStr = localStorage.getItem(historyKey);
+    const cachedAnswersStr = localStorage.getItem(answersKey);
+    const cachedStageStr = localStorage.getItem(stageKey);
+    const cachedDoneStr = localStorage.getItem(doneKey);
+
+    let hasCached = false;
+    if (cachedHistoryStr) {
+      try {
+        const parsedHistory = JSON.parse(cachedHistoryStr).map((m: any) => ({
+          ...m,
+          timestamp: m.timestamp ? new Date(m.timestamp) : new Date()
+        }));
+        setMessages(parsedHistory);
+        
+        if (cachedAnswersStr) {
+          setAnswers(JSON.parse(cachedAnswersStr));
+        }
+        if (cachedStageStr) {
+          setCurrentStage(parseInt(cachedStageStr, 10) || -2);
+        }
+        if (cachedDoneStr) {
+          setIsOnboardingDone(cachedDoneStr === "true");
+        }
+        hasCached = true;
+      } catch (err) {
+        console.warn("Could not parse cached chat history:", err);
+      }
+    }
+
+    async function loadProfileAndVerifyCloudSession() {
       const supabase = getSupabase();
       if (!supabase || !userId) return;
       
       try {
-        const { data, error } = await supabase
+        // Query Profile for premium validation
+        const { data: profile } = await supabase
           .from("profiles")
-          .select("*")
+          .select("is_premium")
           .eq("id", userId)
           .single();
           
-        if (data) {
-          if (data.is_premium) {
-            setPaymentSuccess(true);
-          }
-          if (data.style_dna) {
-            try {
-              const parsed = JSON.parse(data.style_dna);
-              let finalAnswers = { vibe: "", fit: "", lifestyle: "", ick: "", hook: "" };
-              let finalMessages: ChatMessage[] = [];
+        if (profile && profile.is_premium) {
+          setPaymentSuccess(true);
+        }
 
-              if (parsed && typeof parsed === "object" && ("answers" in parsed || "messages" in parsed)) {
-                if (parsed.answers) finalAnswers = { ...finalAnswers, ...parsed.answers };
-                if (parsed.messages && Array.isArray(parsed.messages)) {
-                  finalMessages = parsed.messages.map((m: any) => ({
-                    id: m.id || `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                    role: m.role || "tokyo",
-                    content: m.content || "",
-                    photo: m.photo || undefined,
-                    timestamp: m.timestamp ? new Date(m.timestamp) : new Date()
-                  }));
-                }
-              } else if (parsed && typeof parsed === "object") {
-                // Legacy format (just answers)
-                finalAnswers = { ...finalAnswers, ...parsed };
-              }
+        // If no cached local history exists, check if a cloud session exists for recovery trigger
+        if (!hasCached) {
+          const safeUserId = getSafeUUID(userId);
+          const { data: sessions, error } = await supabase
+            .from("heist_sessions")
+            .select("session_id")
+            .eq("user_id", safeUserId)
+            .limit(1);
 
-              setAnswers(finalAnswers);
-              setCurrentStage(5);
-              setIsOnboardingDone(true);
-
-              if (finalMessages.length > 0) {
-                setMessages(finalMessages);
-              } else {
-                setMessages([
-                  {
-                    id: "loaded_profile_greeting",
-                    role: "tokyo",
-                    content: `Welcome back bestie! Your bespoke DNA styling profiles are secure. ✨\n\n🥋 SILHOUETTE:\nKeeping it relaxed with high-contrast proportions (${finalAnswers.fit || "tailored"}).\n\n🎯 VIBE DIRECTION:\nFrench streetwear and concrete minimalism aligned with ${finalAnswers.vibe || "Old Money"}.\n\n🧴 GROOMING & ADVICE:\nSince you are focusing heavily on ${finalAnswers.lifestyle || "yourself"}, your routine must be quick but high-end. No raw bar soaps! Use a dedicated salicylic cleanser and micro hydration routine.\n\nType below to talk to Tokyo styled in real-time.`,
-                    timestamp: new Date()
-                  }
-                ]);
-              }
-            } catch (pErr) {
-              console.error("Error parsing style_dna:", pErr);
-            }
+          if (sessions && sessions.length > 0) {
+            setShowRestorePrompt(true);
           }
         }
       } catch (err) {
-        console.error("Error loading profile:", err);
+        console.error("Error loading account profile configuration:", err);
       }
     }
-    loadProfile();
-  }, [userId]);
 
+    loadProfileAndVerifyCloudSession();
+
+    // Trigger initial onboarding question of Stage -2 only if there is absolutely no cache
+    if (!hasCached) {
+      setIsTyping(true);
+      const timer = setTimeout(() => {
+        setMessages([
+          {
+            id: "init_msg",
+            role: "tokyo",
+            content: "Welcome to Tokyo! 🌸 Before we begin, let's analyze your canvas. Please upload a clear photo of your Front Profile first so I can map your exact structure!",
+            timestamp: new Date()
+          }
+        ]);
+        setCurrentStage(-2);
+        setIsTyping(false);
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  }, [userId]);
 
   // Core 5 Onboarding script
   const STAGE_QUESTIONS: Record<number, string> = {
-    1: "Face scan secured—bone structure is insane. If budget wasn't a thing, what’s the ultimate vibe? (Old Money, French Riviera, Streetwear?)",
+    1: "What kind of fashion do you like? What's your ultimate styling vibe? (Old Money, French Riviera, Streetwear?)",
     2: "Are we swimming in oversized stuff, or keeping it tailored?",
     3: "Where is your energy going right now? Grinding at work, uni, or just focusing on yourself?",
     4: "What is one fashion trend that gives you the immediate ick?",
@@ -175,73 +227,201 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
     return text;
   };
 
-  // Initial greeting
-  useEffect(() => {
-    if (messages.length > 0) return; // Maintain previous loaded history
-    setIsTyping(true);
-    const timer = setTimeout(() => {
-      setMessages([
-        {
-          id: "init_msg",
-          role: "tokyo",
-          content: STAGE_QUESTIONS[1],
-          timestamp: new Date()
-        }
-      ]);
-      setIsTyping(false);
-    }, 1200);
-    return () => clearTimeout(timer);
-  }, []);
-
   // Auto scroll to chat base
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  // Synchronize style_dna and full chat history back to Supabase automatically
+  // Sync to local state instantly on modification
+  useEffect(() => {
+    if (messages.length === 0) return;
+    if (isTestOnboardingMode) return; // Prevent overwriting main cache in sandbox test mode
+    const historyKey = `heist_chat_history_${userId}`;
+    const answersKey = `heist_onboarding_answers_${userId}`;
+    const stageKey = `heist_current_stage_${userId}`;
+    const doneKey = `heist_onboarding_done_${userId}`;
+
+    localStorage.setItem(historyKey, JSON.stringify(messages));
+    localStorage.setItem(answersKey, JSON.stringify(answers));
+    localStorage.setItem(stageKey, String(currentStage));
+    localStorage.setItem(doneKey, String(isOnboardingDone));
+  }, [messages, answers, currentStage, isOnboardingDone, isTestOnboardingMode, userId]);
+
+  // Save the full updated array to heist_sessions in Supabase in background
   useEffect(() => {
     if (messages.length === 0 || !userId) return;
+    if (isTestOnboardingMode) return; // Skip saving to database if in test mode
     const supabase = getSupabase();
     if (!supabase) return;
 
+    // Embed current state metadata as standard system message at the end of the JSON array dump
+    const enrichedHistory = [
+      ...messages,
+      {
+        id: "heist_state_metadata",
+        role: "system" as const,
+        content: "METADATA",
+        metadata: {
+          answers,
+          currentStage,
+          isOnboardingDone
+        },
+        timestamp: new Date().toISOString()
+      }
+    ];
+
     const timer = setTimeout(async () => {
       try {
-        const payload = {
-          answers,
-          // Store the last 150 messages to secure ample database string space
-          messages: messages.slice(-150).map(m => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            photo: m.photo || undefined,
-            timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : new Date(m.timestamp).toISOString()
-          }))
-        };
+        const safeUserId = getSafeUUID(userId);
+        const sessionKey = `heist_session_id_${userId}`;
+        let safeSessionId = localStorage.getItem(sessionKey);
+        if (!safeSessionId) {
+          safeSessionId = generateUUID();
+          localStorage.setItem(sessionKey, safeSessionId);
+        }
+        const cleanSessionId = getSafeUUID(safeSessionId);
 
+        console.log(`[Database Sync] Upserting heist_sessions for user: ${safeUserId}`);
         await supabase
-          .from("profiles")
-          .update({
-            style_dna: JSON.stringify(payload)
-          })
-          .eq("id", userId);
-        console.log("Auto-synced chat history and style answers to Supabase.");
+          .from("heist_sessions")
+          .upsert({
+            session_id: cleanSessionId,
+            user_id: safeUserId,
+            chat_history: enrichedHistory,
+            updated_at: new Date().toISOString()
+          }, {
+            onConflict: "session_id"
+          });
       } catch (err) {
-        console.warn("Failed to auto-sync history to Supabase:", err);
+        console.warn("[Database Sync Failure] heist_sessions update offline:", err);
       }
-    }, 1000); // Debounce database writes by 1s
+    }, 1000); // Debounce database saves by 1s
 
     return () => clearTimeout(timer);
-  }, [messages, answers, userId]);
+  }, [messages, answers, currentStage, isOnboardingDone, userId]);
+
+  // Recover session row from Supabase JSON dump
+  const handleRestoreCloudSession = async () => {
+    const supabase = getSupabase();
+    if (!supabase || !userId) return;
+    setIsRestoring(true);
+    try {
+      const safeUserId = getSafeUUID(userId);
+      console.log("[Recovery] Attempting database row restore for user:", safeUserId);
+      const { data, error } = await supabase
+        .from("heist_sessions")
+        .select("*")
+        .eq("user_id", safeUserId)
+        .order("updated_at", { ascending: false })
+        .limit(1);
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        const row = data[0];
+        const rawHistory = row.chat_history;
+        if (Array.isArray(rawHistory)) {
+          // Extract metadata if exists
+          const metaMsg = rawHistory.find(m => m.id === "heist_state_metadata");
+          let cleanHistory = [...rawHistory];
+          
+          if (metaMsg && metaMsg.metadata) {
+            const meta = metaMsg.metadata;
+            if (meta.answers) setAnswers(meta.answers);
+            if (meta.currentStage) setCurrentStage(meta.currentStage);
+            if (meta.isOnboardingDone !== undefined) setIsOnboardingDone(meta.isOnboardingDone);
+            
+            // Filter out state metadata message
+            cleanHistory = cleanHistory.filter(m => m.id !== "heist_state_metadata");
+          }
+
+          const parsedHistory = cleanHistory.map((m: any) => ({
+            ...m,
+            timestamp: m.timestamp ? new Date(m.timestamp) : new Date()
+          }));
+
+          const historyKey = `heist_chat_history_${userId}`;
+          const sessionKey = `heist_session_id_${userId}`;
+
+          setMessages(parsedHistory);
+          localStorage.setItem(sessionKey, row.session_id);
+          localStorage.setItem(historyKey, JSON.stringify(parsedHistory));
+          
+          setShowRestorePrompt(false);
+          console.log("[Recovery] Successfully restored and auto-synced locally.");
+        }
+      } else {
+        console.log("[Recovery] No cloud session found for user:", safeUserId);
+      }
+    } catch (err) {
+      console.warn("[Recovery Error] Restore failed:", err);
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
+  const handleTriggerAdminTestOnboarding = () => {
+    setIsTestOnboardingMode(true);
+    setCurrentStage(-2);
+    setAnswers({
+      vibe: "",
+      fit: "",
+      lifestyle: "",
+      ick: "",
+      hook: ""
+    });
+    setIsOnboardingDone(false);
+    setPaywallActive(false);
+    setPaymentSuccess(false);
+    setMessages([
+      {
+        id: `test_init_${Date.now()}`,
+        role: "tokyo",
+        content: "Welcome to Tokyo! 🌸 Before we begin, let's analyze your canvas. Please upload a clear photo of your Front Profile first so I can map your exact structure!\n\n⚠️ ADMIN TEST ONBOARDING ACTIVE: No profile details or chats will be persisted to database or Supermemory.ai during this sandbox run.",
+        timestamp: new Date()
+      }
+    ]);
+  };
 
   const handleUserAnswer = async (text: string) => {
     if ((!text.trim() && !selectedImage) || isTyping || paywallActive) return;
+
+    // Check Stage -2 photo requirement
+    if (currentStage === -2 && !selectedImage && !isOnboardingDone) {
+      const salt = Math.random().toString(36).substring(2, 8);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `tokyo_re_upload_front_${Date.now()}_${salt}`,
+          role: "tokyo",
+          content: "Bestie, I need that front profile photo first! Click 'Upload Front Profile Photo' or the camera icon below to upload. 📸",
+          timestamp: new Date()
+        }
+      ]);
+      return;
+    }
+
+    // Check Stage -1 photo requirement
+    if (currentStage === -1 && !selectedImage && !isOnboardingDone) {
+      const salt = Math.random().toString(36).substring(2, 8);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `tokyo_re_upload_side_${Date.now()}_${salt}`,
+          role: "tokyo",
+          content: "I need that side profile photo to complete the 3D map, bestie! Click 'Upload Side Profile Photo' or the camera icon below to upload. 📸",
+          timestamp: new Date()
+        }
+      ]);
+      return;
+    }
 
     // Append user's message with extra salt to absolutely protect against key collision
     const salt = Math.random().toString(36).substring(2, 8);
     const newMsg: ChatMessage = {
       id: `user_${Date.now()}_${salt}`,
       role: "user",
-      content: text || "Selected visual styling fit check image 📸",
+      content: text || "Selected profile photo check 📸",
       photo: selectedImage || undefined,
       timestamp: new Date()
     };
@@ -256,19 +436,21 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
 
     // Save message trace metrics to Supabase profiles database table
     try {
-      const supabase = getSupabase();
-      if (supabase && userId) {
-        supabase.from("profiles")
-          .select("message_count")
-          .eq("id", userId)
-          .single()
-          .then(({ data }) => {
-            const currentCount = data?.message_count || 0;
-            supabase.from("profiles")
-              .update({ message_count: currentCount + 1 })
-              .eq("id", userId)
-              .then(() => {});
-          });
+      if (!isTestOnboardingMode) {
+        const supabase = getSupabase();
+        if (supabase && userId) {
+          supabase.from("profiles")
+            .select("message_count")
+            .eq("id", userId)
+            .single()
+            .then(({ data }) => {
+              const currentCount = data?.message_count || 0;
+              supabase.from("profiles")
+                .update({ message_count: currentCount + 1 })
+                .eq("id", userId)
+                .then(() => {});
+            });
+        }
       }
     } catch (dbErr) {
       console.warn("Telemetry warning:", dbErr);
@@ -287,12 +469,17 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
             message: text,
             answers: answers,
             history: messages.map(m => ({ role: m.role, content: m.content })),
-            photo: tempImageToSend || undefined
+            photo: tempImageToSend || undefined,
+            is_test: isTestOnboardingMode
           })
         });
         
         const data = await response.json();
         setIsTyping(false);
+
+        if (data.detected_gender) {
+          setAnswers(prev => ({ ...prev, gender: data.detected_gender }));
+        }
 
         if (data.superrag) {
           setSuperragStatus({
@@ -323,6 +510,42 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
       return;
     }
 
+    // Photo scan Stage -2 transitions to Stage -1
+    if (currentStage === -2) {
+      setTimeout(() => {
+        setIsTyping(false);
+        setCurrentStage(-1);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `tokyo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+            role: "tokyo",
+            content: "Secured! Omg, your front profile is giving elite canvas vibes. Now, please upload your Side Profile photo so we secure the full 3D alignment! 📸",
+            timestamp: new Date()
+          }
+        ]);
+      }, 1500);
+      return;
+    }
+
+    // Photo scan Stage -1 transitions to Stage 1
+    if (currentStage === -1) {
+      setTimeout(() => {
+        setIsTyping(false);
+        setCurrentStage(1);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `tokyo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+            role: "tokyo",
+            content: "Both scans secured—literally obsessed with your structure. Now let's lock in the style recipe. First up: What kind of fashion do you like? What's your ultimate styling vibe? (Old Money, French Riviera, Streetwear?)",
+            timestamp: new Date()
+          }
+        ]);
+      }, 1500);
+      return;
+    }
+
     // Onboarding Mode Step Progression
     const currentKey = 
       currentStage === 1 ? "vibe" :
@@ -333,34 +556,44 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
     const updatedAnswers = { ...answers, [currentKey]: text };
     setAnswers(updatedAnswers);
 
-    setTimeout(() => {
+    try {
+      const response = await fetch("/api/tokyo/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          message: text,
+          answers: updatedAnswers,
+          current_onboarding_stage: currentStage,
+          history: messages.map(m => ({ role: m.role, content: m.content })),
+          is_test: isTestOnboardingMode
+        })
+      });
+      const data = await response.json();
       setIsTyping(false);
-      
-      if (currentStage < 5) {
-        const nextStageNum = currentStage + 1;
-        setCurrentStage(nextStageNum);
 
-        // Dynamically compute Tokyo's question for next stage
-        let tokyoQuestion = STAGE_QUESTIONS[nextStageNum];
-        if (nextStageNum === 5) {
-          tokyoQuestion = tokyoQuestion
-            .replace("[Lifestyle]", updatedAnswers.lifestyle || "your Grind")
-            .replace("[Vibe]", updatedAnswers.vibe || "the top Vibe");
+      if (data.detected_gender) {
+        updatedAnswers.gender = data.detected_gender;
+        setAnswers(updatedAnswers);
+      }
+
+      const replyText = data.text || "Bestie, I love that answer so much!";
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `tokyo_onboard_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+          role: "tokyo",
+          content: replyText,
+          timestamp: new Date()
         }
+      ]);
 
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `tokyo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-            role: "tokyo",
-            content: tokyoQuestion,
-            timestamp: new Date()
-          }
-        ]);
+      if (currentStage < 5) {
+        setCurrentStage(currentStage + 1);
       } else {
         // Submit answer to Stage 5 complete -> Launch Paywall Trap unless Admin
         const isAdmin = userEmail.toLowerCase().trim() === "shravan.p1877@gmail.com";
-        if (isAdmin) {
+        if (isAdmin && !isTestOnboardingMode) {
           setPaymentSuccess(true);
           setIsOnboardingDone(true);
           setMessages((prev) => [
@@ -368,105 +601,121 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
             {
               id: `premium_unlocked_msg_${Date.now()}`,
               role: "tokyo",
-              content: `✨ CONGRATULATIONS BESTIE! ADMIN PROFILE IDENTIFIED - PREMIUM UNLOCKED FOR shravan.p1877@gmail.com ✨\n\nI have locked in your full profile. Here is your style recipe:\n\n🥋 SILHOUETTE:\nKeeping it relaxed with high-contrast proportions (${updatedAnswers.fit || 'tailored'}). Fits perfectly balanced for maximum aesthetic presence.\n\n🎯 VIBE DIRECTION:\nFrench streetwear and concrete minimalism aligned with ${updatedAnswers.vibe || 'Old Money'}.\n\n🧴 GROOMING & ADVICE:\nSince you are focusing heavily on ${updatedAnswers.lifestyle || 'yourself'}, your routine must be quick but high-end. No raw bar soaps! Use a dedicated salicylic cleanser and micro hydration routine.\n\nNow tell me - which part of this alignment do you want to secure first?`,
+              content: `✨ CONGRATULATIONS BESTIE! ADMIN PROFILE IDENTIFIED - PREMIUM UNLOCKED FOR shravan.p1877@gmail.com ✨\n\nI have locked in your full profile. Here is your style recipe:\n\n🥋 SILHOUETTE:\nKeeping it relaxed with high-contrast proportions (${updatedAnswers.fit || 'tailored'}). Fits perfectly balanced for maximum aesthetic presence.\n\n🎯 VIBE DIRECTION:\nFrench streetwear and concrete minimalism aligned with ${updatedAnswers.vibe || 'Old Money'}.\n\n🧴 GROOMING & ADVICE:\nSince you are focusing heavily on ${updatedAnswers.lifestyle || 'yourself'}, your routine must be quick but high-end. No raw bar soaps! Use a dedicated salicylic cleanser and micro hydration routine.\n\nNow tell me - who do you want to secure first?`,
               timestamp: new Date()
             }
           ]);
           
-          // Also try persisting admin's premium state on backend Supabase table
           const supabase = getSupabase();
           if (supabase && userId) {
-            const finalMessagesForAdmin = [...messages, {
-              id: `premium_unlocked_msg_${Date.now()}`,
-              role: "tokyo" as const,
-              content: `✨ CONGRATULATIONS BESTIE! ADMIN PROFILE IDENTIFIED - PREMIUM UNLOCKED FOR shravan.p1877@gmail.com ✨\n\nI have locked in your full profile. Here is your style recipe:\n\n🥋 SILHOUETTE:\nKeeping it relaxed with high-contrast proportions (${updatedAnswers.fit || 'tailored'}). Fits perfectly balanced for maximum aesthetic presence.\n\n🎯 VIBE DIRECTION:\nFrench streetwear and concrete minimalism aligned with ${updatedAnswers.vibe || 'Old Money'}.\n\n🧴 GROOMING & ADVICE:\nSince you are focusing heavily on ${updatedAnswers.lifestyle || 'yourself'}, your routine must be quick but high-end. No raw bar soaps! Use a dedicated salicylic cleanser and micro hydration routine.\n\nNow tell me - which part of this alignment do you want to secure first?`,
-              timestamp: new Date()
-            }];
             supabase
               .from("profiles")
-              .update({
-                is_premium: true,
-                style_dna: JSON.stringify({
-                  answers: updatedAnswers,
-                  messages: finalMessagesForAdmin.map(m => ({
-                    id: m.id,
-                    role: m.role,
-                    content: m.content,
-                    timestamp: m.timestamp.toISOString()
-                  }))
-                })
-              })
+              .update({ is_premium: true })
               .eq("id", userId)
               .then(() => console.log("Admin premium persisted in Supabase"));
           }
         } else {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `tokyo_paywall_trigger_${Date.now()}`,
-              role: "tokyo",
-              content: "I love that so much. Honestly, I could literally talk to you about this all night... but my servers are actually locking me out until we upgrade your access. 😭",
-              timestamp: new Date()
-            }
-          ]);
-          
           // Activate paywall blur and modal
           setPaywallActive(true);
         }
       }
-    }, 1500);
+    } catch (err) {
+      console.warn("AI onboarding fetch failed, using fallback:", err);
+      setIsTyping(false);
+      
+      if (currentStage < 5) {
+        const nextStageNum = currentStage + 1;
+        setCurrentStage(nextStageNum);
+        let tokyoQuestion = STAGE_QUESTIONS[nextStageNum];
+        if (nextStageNum === 5) {
+          tokyoQuestion = tokyoQuestion
+            .replace("[Lifestyle]", updatedAnswers.lifestyle || "your Grind")
+            .replace("[Vibe]", updatedAnswers.vibe || "the top Vibe");
+        }
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `tokyo_fallback_${Date.now()}`,
+            role: "tokyo",
+            content: `I love that answer! 😍 Let's proceed: ${tokyoQuestion}`,
+            timestamp: new Date()
+          }
+        ]);
+      } else {
+        setPaywallActive(true);
+      }
+    }
   };
 
   const handlePayment = async () => {
     setPaymentSuccess(true);
 
-    const supabase = getSupabase();
-    if (supabase && userId) {
-      try {
-        const finalMessagesForPayment = [...messages, {
-          id: `premium_unlocked_msg_${Date.now()}`,
-          role: "tokyo" as const,
-          content: `✨ CONGRATULATIONS BESTIE! PREMIUM STYLING blueprints ACTIVATED ✨\n\nI have locked in your full profile. Here is your style recipe:\n\n🥋 SILHOUETTE:\nKeeping it relaxed with high-contrast proportions (${answers.fit}). Fits perfectly balanced for maximum aesthetic presence.\n\n🎯 VIBE DIRECTION:\nFrench streetwear and concrete minimalism aligned with ${answers.vibe}.\n\n🧴 GROOMING & ADVICE:\nSince you are focusing heavily on ${answers.lifestyle}, your routine must be quick but high-end. No raw bar soaps! Use a dedicated salicylic cleanser and micro hydration routine.\n\nNow tell me - which part of this alignment do you want to secure first?`,
-          timestamp: new Date()
-        }];
-        await supabase
-          .from("profiles")
-          .update({
-            is_premium: true,
-            style_dna: JSON.stringify({
-              answers: answers,
-              messages: finalMessagesForPayment.map(m => ({
-                id: m.id,
-                role: m.role,
-                content: m.content,
-                timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : new Date(m.timestamp).toISOString()
-              }))
-            }),
-            message_count: 5
-          })
-          .eq("id", userId);
-        console.log("Supabase profile successfully updated to premium state.");
-      } catch (dbErr) {
-        console.error("Database update failed:", dbErr);
+    if (!isTestOnboardingMode) {
+      const supabase = getSupabase();
+      if (supabase && userId) {
+        try {
+          await supabase
+            .from("profiles")
+            .update({
+              is_premium: true,
+              message_count: 5
+            })
+            .eq("id", userId);
+          console.log("Supabase profile successfully updated to premium state.");
+        } catch (dbErr) {
+          console.error("Database update failed:", dbErr);
+        }
       }
     }
 
-    setTimeout(() => {
+    setTimeout(async () => {
       // Simulate successful unlock state
       setPaywallActive(false);
       setIsOnboardingDone(true);
-      
-      // Tokyo provides alignment response after paywall unlocks
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `premium_unlocked_msg_${Date.now()}`,
-          role: "tokyo",
-          content: `✨ CONGRATULATIONS BESTIE! PREMIUM STYLING blueprints ACTIVATED ✨\n\nI have locked in your full profile. Here is your style recipe:\n\n🥋 SILHOUETTE:\nKeeping it relaxed with high-contrast proportions (${answers.fit}). Fits perfectly balanced for maximum aesthetic presence.\n\n🎯 VIBE DIRECTION:\nFrench streetwear and concrete minimalism aligned with ${answers.vibe}.\n\n🧴 GROOMING & ADVICE:\nSince you are focusing heavily on ${answers.lifestyle}, your routine must be quick but high-end. No raw bar soaps! Use a dedicated salicylic cleanser and micro hydration routine.\n\nNow tell me - which part of this alignment do you want to secure first?`,
-          timestamp: new Date()
+      setIsTyping(true);
+
+      try {
+        const response = await fetch("/api/tokyo/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: userId,
+            is_payment_hype: true,
+            answers: answers,
+            history: messages.map(m => ({ role: m.role, content: m.content })),
+            is_test: isTestOnboardingMode
+          })
+        });
+        const data = await response.json();
+        if (data.detected_gender) {
+          setAnswers(prev => ({ ...prev, gender: data.detected_gender }));
         }
-      ]);
-    }, 1800);
+        const replyText = data.text || "OMGBESTIE! We are officially locked in! Thank you so much for trusting me, I promise I won't ever let you down! ❤️ Now, let's break the ice and start yapping. Tell me, how is your day REALLY going? Who has been annoying you today? Spill all the tea!";
+        
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `tokyo_unlocked_${Date.now()}`,
+            role: "tokyo",
+            content: replyText,
+            timestamp: new Date()
+          }
+        ]);
+      } catch (err) {
+        console.warn("Payment hype AI call failed, using fallback:", err);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `tokyo_unlocked_fallback_${Date.now()}`,
+            role: "tokyo",
+            content: "OMGBESTIE! We are officially locked in! Thank you so much for trusting me, I promise I won't ever let you down! ❤️ Now, let's break the ice and start yapping. Tell me something juicy: what's the most chaotic thing that has happened to you this week? Let it all out!",
+            timestamp: new Date()
+          }
+        ]);
+      } finally {
+        setIsTyping(false);
+      }
+    }, 1500);
   };
 
   return (
@@ -491,6 +740,19 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
         </div>
 
         <div className="flex items-center space-x-3">
+          {userEmail.toLowerCase().trim() === "shravan.p1877@gmail.com" && (
+            <button 
+              onClick={handleTriggerAdminTestOnboarding}
+              className={`flex items-center space-x-1.5 px-3 py-1.5 border rounded-xl text-xs font-black uppercase tracking-wider active:scale-95 transition-all shadow-sm cursor-pointer ${
+                isTestOnboardingMode 
+                  ? "bg-amber-100 border-amber-500 text-amber-900 ring-2 ring-amber-400 font-extrabold" 
+                  : "bg-slate-100/90 border-teal-950/25 text-teal-950 hover:bg-white"
+              }`}
+            >
+              <RefreshCw size={13} className={isTestOnboardingMode ? "animate-spin" : ""} />
+              <span>{isTestOnboardingMode ? "Testing Active" : "Test Onboarding"}</span>
+            </button>
+          )}
           {/* Settings Tab / sign out */}
           <button 
             onClick={() => setShowSettings(!showSettings)}
@@ -509,6 +771,39 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
         {/* CHAT SCREEN WITH TRANSITIONAL EFFECTS */}
         <div className={`flex-1 p-4 md:p-8 flex flex-col justify-between overflow-hidden relative ${paywallActive ? "backdrop-blur-md pointer-events-none select-none blur-sm" : ""}`}>
           <div className="flex-1 overflow-y-auto space-y-6 py-4 px-2 md:px-4">
+            {isTestOnboardingMode && (
+              <div className="bg-amber-105 border-2 border-amber-400 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-md">
+                <div className="text-left">
+                  <p className="text-xs font-black uppercase tracking-widest text-amber-800">⚠️ Sandbox Active</p>
+                  <p className="text-sm font-extrabold text-amber-950">Onboarding & Chat testing environment is active. All database persistence & Supermemory.ai indexing checks are paused.</p>
+                </div>
+                <button
+                  onClick={() => {
+                    window.location.reload();
+                  }}
+                  className="bg-amber-750 hover:bg-amber-900 border border-amber-600 text-white px-3 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition active:scale-95 cursor-pointer shrink-0 shadow-sm"
+                >
+                  Exit Sandbox
+                </button>
+              </div>
+            )}
+
+            {showRestorePrompt && (
+              <div className="bg-slate-100 border-2 border-slate-400 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-md animate-bounce-short">
+                <div className="text-left">
+                  <p className="text-xs font-black uppercase tracking-widest text-slate-600">🧠 Tokyo remembers everything from previous chats.</p>
+                  <p className="text-sm font-extrabold text-black">Restore your custom styling parameters seamlessly.</p>
+                </div>
+                <button
+                  onClick={handleRestoreCloudSession}
+                  disabled={isRestoring}
+                  className="bg-[#525252] hover:bg-[#323232] text-white px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all duration-150 active:scale-95 cursor-pointer disabled:opacity-50 shrink-0 shadow-sm"
+                >
+                  {isRestoring ? "Restoring..." : "Click here to restore"}
+                </button>
+              </div>
+            )}
+
             {messages.map((msg, index) => (
               <div 
                 key={`${msg.id}-${index}`}
@@ -552,10 +847,45 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
             <div ref={messagesEndRef} />
           </div>
 
-          {/* CHIP SUGGESTIONS / AUTO CLICKS */}
           {!paywallActive && (
             <div className="pt-2">
               <AnimatePresence mode="wait">
+                {currentStage === -2 && (
+                  <motion.div
+                    key="presets-stage-front"
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    className="flex flex-wrap gap-2 pb-4 px-1"
+                  >
+                    <button
+                      onClick={handleImageUploadClick}
+                      className="py-3 px-5 bg-teal-950 text-white text-xs font-black border-2 border-teal-500 rounded-xl hover:bg-teal-900 active:scale-95 transition-all shadow-md cursor-pointer uppercase flex items-center space-x-2 animate-pulse"
+                    >
+                      <Image size={14} className="text-teal-400" />
+                      <span>Upload Front Profile Photo 📸</span>
+                    </button>
+                  </motion.div>
+                )}
+
+                {currentStage === -1 && (
+                  <motion.div
+                    key="presets-stage-side"
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    className="flex flex-wrap gap-2 pb-4 px-1"
+                  >
+                    <button
+                      onClick={handleImageUploadClick}
+                      className="py-3 px-5 bg-teal-950 text-white text-xs font-black border-2 border-teal-500 rounded-xl hover:bg-teal-900 active:scale-95 transition-all shadow-md cursor-pointer uppercase flex items-center space-x-2 animate-pulse"
+                    >
+                      <Image size={14} className="text-teal-400" />
+                      <span>Upload Side Profile Photo 📸</span>
+                    </button>
+                  </motion.div>
+                )}
+
                 {STAGE_PRESETS[currentStage] && (
                   <motion.div
                     key={`presets-${currentStage}`}
@@ -600,7 +930,7 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
                   </span>
                 </div>
               )}
-
+ 
               {/* LOWER INPUT CONTROL BOARD */}
               <div className="relative flex items-center px-1">
                 <input
@@ -620,6 +950,10 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
                   placeholder={
                     paywallActive 
                       ? "Master styling blueprints locking..." 
+                      : currentStage === -2
+                      ? "Attach front profile photo above... 📸"
+                      : currentStage === -1
+                      ? "Attach side profile photo above... 📸"
                       : "Type here to chat..."
                   }
                   disabled={paywallActive}

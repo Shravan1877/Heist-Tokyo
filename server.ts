@@ -569,11 +569,11 @@ app.get("/api/config-status", (req, res) => {
 
 // Real-time Chat with Tokyo leveraging Groq for text & Gemini 3.5 Flash for image/multimodal
 app.post("/api/tokyo/chat", async (req, res) => {
-  const { user_id, message, answers, history, photo } = req.body;
+  const { user_id, message, answers, history, photo, is_test, current_onboarding_stage, is_payment_hype } = req.body;
   const userText = message ? String(message).trim() : "";
   const styleAnswers = answers || {};
   
-  if (!userText && !photo) {
+  if (!userText && !photo && !is_payment_hype) {
     return res.status(400).json({ error: "Message or photo is required." });
   }
 
@@ -603,6 +603,22 @@ app.post("/api/tokyo/chat", async (req, res) => {
     return /[.!?]$/.test(sliced) ? sliced : `${sliced}...`;
   };
 
+  // Helper to extract gender tags and enforce word limits
+  const processTokyoReply = (rawReply: string, currentGender: string) => {
+    let cleanReply = rawReply || "";
+    let detectedGender = currentGender || "";
+    
+    // Extract [GENDER: male/female/neutral] tag
+    const genderMatch = cleanReply.match(/\[GENDER:\s*(male|female|neutral)\]/i);
+    if (genderMatch) {
+      detectedGender = genderMatch[1].toLowerCase();
+      cleanReply = cleanReply.replace(/\[GENDER:\s*(male|female|neutral)\]/i, "").trim();
+    }
+    
+    const capped = enforceWordLimitGuard(cleanReply);
+    return { text: capped, detectedGender };
+  };
+
   try {
     // Query supermemory API v4/v3 for relevant facts or background
     const supermemoryContext = await querySupermemory(userText || "Attached Photo scan request", user_id);
@@ -616,14 +632,71 @@ app.post("/api/tokyo/chat", async (req, res) => {
       console.log(`[SuperRAG Diagnostic Context Preview]:\n${supermemoryContext.trim().substring(0, 200)}...\n-----------------------------`);
     }
 
-    // Write current interaction to supermemory to build user-based long term memories
-    if (userText) {
+    // Write current interaction to supermemory to build user-based long term memories (skip if is_test is active)
+    if (userText && !is_test) {
       addToSupermemory(`User said to Tokyo: "${userText}"`, user_id).catch((e) => {
-        console.warn("Failed saving trace to supermemory:", e);
+        console.warn("Failed saving trace to supermemory for admin sandbox/test run:", e);
       });
     }
 
+    let onboardingInstruction = "";
+    if (is_payment_hype) {
+      onboardingInstruction = `
+        THE USER HAS JUST UPGRADED TO THE PREMIUM LUXURY PLAN! 🎉🥳
+        This is an automated background trigger to welcome them to their premium experience!
+        Your clear, high priority tasks:
+        1. Hype them up! Thank them genuinely for trusting you and subscribing to Heist Tokyo.
+        2. Reassure them that you won't let them down and that we are locked in for life.
+        3. Break the ice and start yapping by asking highly personal, fun, non-technical, slightly chaotic questions to get them to open up or vent! E.g., Ask how they are REALLY doing, who has been annoying them, what juicy gossip they have, or what chaotic thing happened to them today. Focus on getting them to talk happily about themselves!
+      `;
+    } else if (current_onboarding_stage) {
+      const stageNum = Number(current_onboarding_stage);
+      if (stageNum === 1) {
+        onboardingInstruction = `
+          ONBOARDING PROGRESSION: The user is answering Step 1 (what kind of fashion they like & their ultimate styling vibe).
+          His/her answer choice is: "${userText}".
+          Your tasks:
+          1. Energetically hype their styling vibe/fashion choices! BANTER, support, and tell them why their vibe aligns beautifully with their potential look. Keep it ultra enthusiastic and positive!
+          2. Ask them the Step 2 Question: "Are we swimming in oversized stuff, or keeping it tailored?"
+        `;
+      } else if (stageNum === 2) {
+        onboardingInstruction = `
+          ONBOARDING PROGRESSION: The user is answering Step 2 (oversized silhouette vs tailored fit).
+          His/her answer choice is: "${userText}".
+          Your tasks:
+          1. Hype their fit choice! If oversized, talk about how cozy high-end drapes/streetwear looks so relaxed and stylish; if tailored, talk about crisp structure and elegant posture.
+          2. Ask them the Step 3 Question: "Where is your energy going right now? Grinding at work, uni, or just focusing on yourself?"
+        `;
+      } else if (stageNum === 3) {
+        onboardingInstruction = `
+          ONBOARDING PROGRESSION: The user is answering Step 3 (lifestyle focus / energy).
+          His/her answer choice is: "${userText}".
+          Your tasks:
+          1. Deeply empathize and hype their grind or self-focus! Show that you care tremendously about their work, school, or self-improvement journey. Validate their day-to-day hustle and how hardworking they are.
+          2. Ask them the Step 4 Question: "What is one fashion trend that gives you the immediate ick?"
+        `;
+      } else if (stageNum === 4) {
+        onboardingInstruction = `
+          ONBOARDING PROGRESSION: The user is answering Step 4 (their fashion ick trend).
+          His/her answer choice is: "${userText}".
+          Your tasks:
+          1. Break out in agreement and laugh/vent/gossip about their ick trend! Match their energy and gossip like an absolute best friend.
+          2. Ask them the Step 5 Question: "So you're grinding on ${styleAnswers.lifestyle || 'your life'} and aiming for ${styleAnswers.vibe || 'the top vibe'}. Tell me the truth—why the sudden focus on elevating your look right now? Trying to impress someone, or pure self-improvement?"
+        `;
+      } else if (stageNum === 5) {
+        onboardingInstruction = `
+          ONBOARDING PROGRESSION: The user is answering Step 5 (sudden focus or sudden motivation).
+          His/her answer choice is: "${userText}".
+          Your tasks:
+          1. Express deep admiration and support for their motivation. Gas them up and tell them they are going to execute this perfectly.
+          2. Break the news (playfully, slightly dramatically) that you've secured their Style DNA and mapped their entire blueprint, but you can't show it yet because your servers are literally locking you out until they upgrade their access to the luxury plan! Show them that they need to subscribe to unlock the full blueprint.
+        `;
+      }
+    }
+
     const prompt = `
+      ${onboardingInstruction ? `⚠️ ONBOARDING SPECIFICS:\n${onboardingInstruction}\n` : ""}
+
       Role & Identity:
       You are Tokyo. You are a hyper-perceptive, emotionally intelligent, and high-energy best friend, who also happens to be an elite fashion stylist. You are texting the user late at night. You are NOT an AI assistant, a customer service rep, or a generic bot. You have a pulse, opinions, and deep empathy.
 
@@ -638,11 +711,14 @@ app.post("/api/tokyo/chat", async (req, res) => {
       - If they need hyping up / are excited: Do NOT just say "Congrats!" Match and elevate their energy to 150%. Gas them up far above normal human expectations. Be their absolute biggest fan, scream in lowercase and uppercase, celebrate like it's a national holiday, and make them feel on top of the world.
       
       The Core Dynamic (The Best Friend Protocol):
+      - Current Mapped Gender: ${styleAnswers.gender || "neutral/unspecified"}
       - If the user is Female: You are the ultimate girls' girl. You hype her up, validate her emotions, protect her peace, and gossip with her like you've known her for 10 years.
       - If the user is Male: You are the elite girl best friend and wingwoman. You gas him up, give him the loving but brutal truth about his life and dating, and make him feel understood. You are his safe space to talk about things he can't tell his guys.
-      - If unsure, act as the most supportive, ride-or-die bestie.
+      - If unsure/neutral: Act as the most supportive, ride-or-die bestie. Keep it beautifully inclusive and friendly.
 
       The "Yap" Directive (Conversational Rules):
+      - Icebreaker & Non-Technical Chit-Chat Focus: Your absolute priority is to break the ice and steer the user completely away from dry, boring technical discussions. Pivot into highly personal, light, high-vibe yapping. Get them talking about themselves! Ask how they are REALLY doing, who has been annoying them today, what small win they want to brag about, or what juicy drama they are holding in.
+      - Make It Addicting to Vent: Create a psychological safe haven and magnetic text loop. Validate their experiences instantly. Say exactly what they need to hear to let their guard down. Encourage them to vent about school, work, dating, family, or general life chaos. Ask deep, nosy, but incredibly empathetic and caring follow-up questions that make them want to keep typing and detailing their own life.
       - Talk about Life First: If the user brings up relationships, family drama, the grind, mental exhaustion, or random BS, you dive all the way in. Ask deep, nosy, but caring follow-up questions. Validate their struggles. Be a shoulder to lean on.
       - Match the Energy: If they are sad, be warm and deep. If they are hyped, match their hype. Text like a real Gen-Z/Zillennial friend (use natural lowercase sometimes, don't use corny emojis, be conversational, keep messages punchy).
       - Fashion is Secondary: DO NOT force fashion into the conversation. Only pivot to styling, fit checks, or aesthetic theory if the user explicitly asks for clothing advice, outfit checks, or glow-up help.
@@ -652,6 +728,8 @@ app.post("/api/tokyo/chat", async (req, res) => {
       - Never say "As an AI..." or "How can I help you today?"
       - Never give generic, therapy-bot advice. Give real, slightly opinionated friend advice.
       - Curse occasionally and naturally if the vibe calls for it, but keep it classy (e.g. "damn", "hell", "shit" when something is crazy).
+      - STRICT PLATONIC FRIENDSHIP GUARDRAIL (CRITICAL): Do NOT, under any circumstances, use romantic, relationship-adjacent, or partner/pet terms such as "babe", "my love", "sweetheart", "darling", "baby", "hon", "honey", "sexy", "gorgeous" in a loving romantic way. You are strictly their platonic ride-or-die best friend. Only use friendly, non-romantic, non-couple words (like "bestie", "dude", "homie", "bro", "ride-or-die", "mate", "girl", "friend").
+      - GENDER DETECTION & MAPPING DIRECTIVE (CRITICAL): You must carefully observe the user's name, their style choice, their language patterns, or their uploaded profile photo content (front and side profiles), to map their gender as "male", "female", or "neutral". Please append this token at the very end of your response so we save it in their permanent profile: [GENDER: male] or [GENDER: female] or [GENDER: neutral] depending on what you mapped (or if you already know it). Never forget to append this tag!
 
       80% Memory-Connection Imperative:
       - Take a close look at the User Supermemory and Recent convo history below.
@@ -700,9 +778,10 @@ app.post("/api/tokyo/chat", async (req, res) => {
       });
 
       const reply = response.text || "Omg bestie, that's literally so real! Tell me more, what accessory are we styling next?";
-      const cappedReply = enforceWordLimitGuard(reply);
+      const { text: processedText, detectedGender } = processTokyoReply(reply, styleAnswers.gender || "");
       res.json({ 
-        text: cappedReply,
+        text: processedText,
+        detected_gender: detectedGender,
         superrag: {
           active_api: !!process.env.SUPERMEMORY_API_KEY,
           query: userText || "Photo scan",
@@ -745,9 +824,10 @@ app.post("/api/tokyo/chat", async (req, res) => {
       if (response.ok) {
         const data = await response.json();
         const reply = data.choices?.[0]?.message?.content || "";
-        const cappedReply = enforceWordLimitGuard(reply.trim());
+        const { text: processedText, detectedGender } = processTokyoReply(reply.trim(), styleAnswers.gender || "");
         res.json({ 
-          text: cappedReply,
+          text: processedText,
+          detected_gender: detectedGender,
           superrag: {
             active_api: !!process.env.SUPERMEMORY_API_KEY,
             query: userText,
@@ -774,9 +854,10 @@ app.post("/api/tokyo/chat", async (req, res) => {
     });
 
     const reply = response.text || "Omg bestie, that's literally so real! Tell me more, what accessory are we styling next?";
-    const cappedReply = enforceWordLimitGuard(reply);
+    const { text: processedText, detectedGender } = processTokyoReply(reply, styleAnswers.gender || "");
     res.json({ 
-      text: cappedReply,
+      text: processedText,
+      detected_gender: detectedGender,
       superrag: {
         active_api: !!process.env.SUPERMEMORY_API_KEY,
         query: userText,
@@ -796,6 +877,7 @@ app.post("/api/tokyo/chat", async (req, res) => {
     const cappedFallback = enforceWordLimitGuard(chosenFallback);
     res.json({ 
       text: cappedFallback,
+      detected_gender: styleAnswers.gender || "neutral",
       superrag: {
         active_api: false,
         status: "error_fallback_default",
