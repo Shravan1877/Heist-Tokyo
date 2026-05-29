@@ -5,7 +5,7 @@ from typing import TypedDict, List, Optional, Literal
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
@@ -595,6 +595,20 @@ async def chat_interaction(payload: UserChatPayload):
     return {
         "reply": result["messages"][-1]["content"],
         "state": result
+    }
+
+@app.get("/api/supabase-config")
+async def get_supabase_config():
+    supabase_url = os.getenv("VITE_SUPABASE_URL")
+    supabase_anon_key = os.getenv("VITE_SUPABASE_ANON_KEY")
+    if not supabase_url or not supabase_anon_key:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in environment variables."}
+        )
+    return {
+        "VITE_SUPABASE_URL": supabase_url,
+        "VITE_SUPABASE_ANON_KEY": supabase_anon_key
     }
 
 # Serve static assets if dist exists
