@@ -514,6 +514,38 @@ def paywall_or_routing_edge(state: StylistState) -> str:
 
 app = FastAPI(title="HEIST Assistant Backend", version="3.1")
 
+# Backend PostgreSQL database connection pool initialization using DATABASE_URL
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+db_pool = None
+
+@app.on_event("startup")
+async def startup_db_client():
+    global db_pool
+    if not DATABASE_URL:
+        print("ℹ️ DATABASE_URL is not set. Backend direct PostgreSQL connection is inactive.")
+        return
+    try:
+        from psycopg_pool import AsyncConnectionPool
+        db_pool = AsyncConnectionPool(
+            conninfo=DATABASE_URL,
+            kwargs={"autocommit": True},
+            open=False
+        )
+        await db_pool.open()
+        print("🚀 Backend database connection pool successfully opened using DATABASE_URL.")
+    except Exception as e:
+        print(f"⚠️ Failed to open direct database connection pool: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    global db_pool
+    if db_pool:
+        try:
+            await db_pool.close()
+            print("🛑 Backend database connection pool closed.")
+        except Exception as e:
+            print(f"⚠️ Failed to close database connection pool: {e}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
