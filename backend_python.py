@@ -659,6 +659,11 @@ async def serve_react_app(catchall: str):
     ):
         raise HTTPException(status_code=404, detail="API route not found")
     
+    # Check if a physical file corresponding to the path exists in the dist directory
+    requested_file = os.path.join("dist", catchall)
+    if os.path.isfile(requested_file):
+        return FileResponse(requested_file)
+    
     index_path = os.path.join("dist", "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
