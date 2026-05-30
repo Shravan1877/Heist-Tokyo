@@ -1031,10 +1031,25 @@ export default function Onboarding({ userEmail, userId, onLogout }: OnboardingPr
                 </div>
               </div>
 
-              <div className="space-y-1 bg-slate-50 p-3 rounded-2xl border border-slate-200 text-xs text-slate-600 leading-relaxed">
-                <p className="font-extrabold uppercase text-[9px] text-slate-500 tracking-wider">Device info</p>
+              <div className="space-y-1.5 bg-slate-50 p-3.5 rounded-2xl border border-slate-200 text-xs text-slate-600 leading-relaxed">
+                <p className="font-extrabold uppercase text-[9px] text-slate-500 tracking-wider">Device & Security</p>
                 <p>Status: connected secures</p>
                 <p>Protocol: Supabase State persistence active</p>
+              </div>
+
+              <div className="space-y-2 bg-slate-50 p-3.5 rounded-2xl border border-slate-200 text-xs text-left">
+                <p className="font-extrabold uppercase text-[9px] text-slate-500 tracking-wider">Policies & Compliance</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettings(false);
+                    window.history.pushState({}, "", "/legal");
+                    window.dispatchEvent(new Event("heist-navigate"));
+                  }}
+                  className="w-full text-left font-bold text-teal-850 hover:underline cursor-pointer flex items-center space-x-1.5"
+                >
+                  <span>⚖️ view HEIST. legal agreements</span>
+                </button>
               </div>
 
               <div className="pt-2">

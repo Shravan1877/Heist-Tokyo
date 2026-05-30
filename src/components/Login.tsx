@@ -318,9 +318,23 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           )}
         </AnimatePresence>
 
-        <div className="mt-8 pt-4 border-t border-slate-100 flex items-center justify-center space-x-1.5 text-[10px] text-slate-400 font-mono tracking-widest uppercase select-none">
-          <ShieldCheck size={12} className="text-teal-800/40" />
-          <span>SUPABASE AUTH PROTOCOL</span>
+        <div className="mt-8 pt-4 border-t border-slate-100 flex flex-col items-center space-y-2 text-[10px] text-slate-400 font-mono tracking-widest uppercase select-none">
+          <div className="flex items-center space-x-1.5">
+            <ShieldCheck size={12} className="text-teal-800/40" />
+            <span>SUPABASE AUTH PROTOCOL</span>
+          </div>
+          <div className="flex items-center space-x-3 text-[10px] text-slate-500 font-medium font-sans lowercase tracking-tight">
+            <button 
+              type="button"
+              onClick={() => {
+                window.history.pushState({}, "", "/legal");
+                window.dispatchEvent(new Event("heist-navigate"));
+              }}
+              className="hover:text-teal-800 transition cursor-pointer font-bold underline"
+            >
+              Refund, Privacy & Terms Policies
+            </button>
+          </div>
         </div>
       </div>
     </div>

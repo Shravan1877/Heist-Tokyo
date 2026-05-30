@@ -2,11 +2,26 @@ import React, { useState, useEffect } from "react";
 import Login from "./components/Login";
 import Onboarding from "./components/Onboarding";
 import InstallPrompt from "./components/InstallPrompt";
+import Legal from "./components/Legal";
 
 export default function App() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [path, setPath] = useState<string>(window.location.pathname);
+
+  // Listen for custom simple navigation events to keep path in sync beautifully
+  useEffect(() => {
+    const handleLocationChange = () => {
+      setPath(window.location.pathname);
+    };
+    window.addEventListener("popstate", handleLocationChange);
+    window.addEventListener("heist-navigate", handleLocationChange);
+    return () => {
+      window.removeEventListener("popstate", handleLocationChange);
+      window.removeEventListener("heist-navigate", handleLocationChange);
+    };
+  }, []);
 
   // Check persistent login on mount and fetch Supabase config dynamically
   useEffect(() => {
@@ -60,6 +75,17 @@ export default function App() {
           </p>
         </div>
       </div>
+    );
+  }
+
+  if (path === "/legal") {
+    return (
+      <Legal 
+        onBack={() => {
+          window.history.pushState({}, "", "/");
+          window.dispatchEvent(new Event("heist-navigate"));
+        }} 
+      />
     );
   }
 
