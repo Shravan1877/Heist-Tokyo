@@ -5,3 +5,5 @@ langchain-google-genai
 langgraph
 supabase
 python-dotenv
+psycopg[binary,pool]
+psycopg-pool
