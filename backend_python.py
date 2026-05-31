@@ -675,22 +675,12 @@ async def get_manifest():
     fallback_manifest = '{"name": "HEIST", "short_name": "HEIST", "start_url": "/", "display": "standalone"}'
     return Response(content=fallback_manifest, media_type="application/manifest+json")
 
-# Absolute bottom: Catch-all route to serve the React App SPA using absolute paths
-@app.get("/{catchall:path}")
-async def serve_react_app(catchall: str):
-    # Ignore any paths starting with api/, docs, or openapi.json to prevent hijacking of backend API routes
-    if (
-        catchall.startswith("api/") or 
-        catchall.startswith("api") or 
-        catchall.startswith("docs") or 
-        catchall.startswith("openapi.json")
-    ):
-        raise HTTPException(status_code=404, detail="API route not found")
-    
-    target_file = DIST_DIR / catchall
-    if target_file.is_file():
-        return FileResponse(target_file)
-    
+# Explicit Page Routing instead of catch-all to prevent HTML wrapping of missing files
+@app.get("/")
+@app.get("/login")
+@app.get("/dashboard")
+@app.get("/legal")
+async def serve_frontend():
     index_path = DIST_DIR / "index.html"
     if index_path.is_file():
         return FileResponse(index_path)
