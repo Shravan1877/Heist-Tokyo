@@ -1,7 +1,12 @@
 import os
 import uuid
 import httpx
+from pathlib import Path
 from typing import TypedDict, List, Optional, Literal
+
+# Define absolute paths dynamically
+BASE_DIR = Path(__file__).resolve().parent
+DIST_DIR = BASE_DIR / "dist"
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.staticfiles import StaticFiles
@@ -643,11 +648,11 @@ async def get_supabase_config():
         "VITE_SUPABASE_ANON_KEY": supabase_anon_key
     }
 
-# Serve static assets if dist exists
-if os.path.exists("dist"):
-    app.mount("/assets", StaticFiles(directory="dist/assets"), name="assets")
+# Serve static assets if dist exists using absolute path
+if DIST_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
 
-# Absolute bottom: Catch-all route to serve the React App SPA
+# Absolute bottom: Catch-all route to serve the React App SPA using absolute paths
 @app.get("/{catchall:path}")
 async def serve_react_app(catchall: str):
     # Ignore any paths starting with api/, docs, or openapi.json to prevent hijacking of backend API routes
@@ -659,13 +664,12 @@ async def serve_react_app(catchall: str):
     ):
         raise HTTPException(status_code=404, detail="API route not found")
     
-    # Check if a physical file corresponding to the path exists in the dist directory
-    requested_file = os.path.join("dist", catchall)
-    if os.path.isfile(requested_file):
-        return FileResponse(requested_file)
+    target_file = DIST_DIR / catchall
+    if target_file.is_file():
+        return FileResponse(target_file)
     
-    index_path = os.path.join("dist", "index.html")
-    if os.path.exists(index_path):
+    index_path = DIST_DIR / "index.html"
+    if index_path.is_file():
         return FileResponse(index_path)
     return {"message": "Vite frontend distribution 'dist/' directory is missing locally. Run build first."}
 
