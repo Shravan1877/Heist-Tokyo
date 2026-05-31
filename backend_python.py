@@ -8,7 +8,7 @@ from typing import TypedDict, List, Optional, Literal
 BASE_DIR = Path(__file__).resolve().parent
 DIST_DIR = BASE_DIR / "dist"
 from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -651,6 +651,29 @@ async def get_supabase_config():
 # Serve static assets if dist exists using absolute path
 if DIST_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
+
+# Explicit PWA and static asset routes to prevent Uncaught SyntaxError from index.html fallback
+@app.get("/registerSW.js")
+async def get_register_sw():
+    target_file = DIST_DIR / "registerSW.js"
+    if target_file.is_file():
+        return FileResponse(target_file)
+    return Response(content="// PWA Service Worker Registration Placeholder", media_type="application/javascript")
+
+@app.get("/sw.js")
+async def get_sw():
+    target_file = DIST_DIR / "sw.js"
+    if target_file.is_file():
+        return FileResponse(target_file)
+    return Response(content="// PWA Service Worker Placeholder", media_type="application/javascript")
+
+@app.get("/manifest.webmanifest")
+async def get_manifest():
+    target_file = DIST_DIR / "manifest.webmanifest"
+    if target_file.is_file():
+        return FileResponse(target_file)
+    fallback_manifest = '{"name": "HEIST", "short_name": "HEIST", "start_url": "/", "display": "standalone"}'
+    return Response(content=fallback_manifest, media_type="application/manifest+json")
 
 # Absolute bottom: Catch-all route to serve the React App SPA using absolute paths
 @app.get("/{catchall:path}")
